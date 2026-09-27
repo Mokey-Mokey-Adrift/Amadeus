@@ -1,4 +1,5 @@
 import asyncio
+import difflib
 import json
 import os
 import re
@@ -10,6 +11,7 @@ import wave
 import winsound
 from datetime import datetime
 
+import ollama
 import requests
 import edge_tts
 import pygame
@@ -17,17 +19,31 @@ import sounddevice as sd
 from piper import PiperVoice
 from vosk import Model, KaldiRecognizer
 
+try:
+    from duckduckgo_search import DDGS
+except ImportError:
+    from ddgs import DDGS  # на случай нового названия пакета
+
 MODEL_PATH = "vosk-model-small-ru-0.22"
 VOICE_OFFLINE = "ru_RU-irina-medium.onnx"
 VOICE_EDGE = "ru-RU-SvetlanaNeural"
 ALARMS_FILE = "alarms.json"
+AI_MODEL = "qwen2.5:7b"  # если тянете 3b — верните "qwen2.5:3b"
 
-CITY = "Москва"  # ваш город
-CITY_LAT = 55.75   # широта
-CITY_LON = 37.61   # долгота
+CITY = "Санкт-Петербург"
+CITY_LAT = 59.94
+CITY_LON = 30.31
+
+SYSTEM_PROMPT = (
+    "Ты — Амадэус, личный голосовой ассистент. Отвечай ТОЛЬКО на русском языке. "
+    "Никогда не используй иероглифы, английские вставки или другие языки. "
+    "Отвечай коротко (1-3 предложения), живым языком. Ответ будет озвучен голосом, "
+    "поэтому без списков, без markdown, без эмодзи."
+)
 
 voice_offline = PiperVoice.load(VOICE_OFFLINE)
 pygame.mixer.init()
+vosk_model = Model(MODEL_PATH)
 
 # ---------- Озвучка ----------
 
@@ -53,22 +69,107 @@ def amadeus_say(text):
             voice_offline.synthesize_wav(text, wav_file)
         winsound.PlaySound("speech.wav", winsound.SND_FILENAME)
 
+# ---------- ИИ ----------
+
+ai_history = []
+
+def ai_ask(text):
+    """Отправить фразу в модель с контекстом диалога."""
+    try:
+        ai_history.append({"role": "user", "content": text})
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + ai_history[-10:]
+        response = ollama.chat(model=AI_MODEL, messages=messages,
+                               options={"temperature": 0.7})
+        answer = response["message"]["content"].strip()
+        ai_history.append({"role": "assistant", "content": answer})
+        return answer
+    except Exception as e:
+        print(f"Ошибка ИИ: {e}")
+        return None
+
+# ---------- Поиск в интернете ----------
+
+def search_web(query, max_results=5):
+    """Поиск в DuckDuckGo. Вернёт список результатов или None."""
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=max_results))
+        return results
+    except Exception as e:
+        print(f"Ошибка поиска: {e}")
+        return None
+
+def ai_ask_with_search(question):
+    """Поищет в интернете и заставит ИИ ответить, опираясь на найденное."""
+    results = search_web(question)
+    if not results:
+        return "Ничего не нашёл в интернете. Попробуйте переформулировать."
+
+    context_parts = []
+    for r in results:
+        title = r.get("title", "")
+        body = r.get("body", "")
+        context_parts.append(f"- {title}: {body}")
+    context_text = "\n".join(context_parts)
+
+    print("--- Источники ---")
+    for r in results:
+        print(f"  {r.get('title')} | {r.get('href')}")
+    print("-----------------")
+
+    grounded = (
+        f"Вопрос пользователя: {question}\n\n"
+        f"Вот что нашлось в интернете:\n{context_text}\n\n"
+        "Ответь на вопрос, опираясь ТОЛЬКО на эти данные (1-3 предложения). "
+        "Если в данных нет ответа — честно скажи, что не нашёл, не выдумывай."
+    )
+    return ai_ask(grounded)
+
 # ---------- Слушание ----------
 
-def amadeus_listen():
-    model = Model(MODEL_PATH)
-    recognizer = KaldiRecognizer(model, 16000)
+def amadeus_listen(say_first=None, discard_seconds=1.5, timeout_seconds=None):
+    """Слушать микрофон. Ждёт 2 сек тишины после речи (можно говорить с паузами).
+    timeout_seconds — максимум ожидания начала речи (для диалога с ИИ)."""
+    recognizer = KaldiRecognizer(vosk_model, 16000)
+    final_text = ""
+    last_speech_time = time.time()
+    started = False
 
-    print("Говорите...")
     with sd.RawInputStream(samplerate=16000, blocksize=8000,
                            dtype='int16', channels=1) as stream:
+        if say_first:
+            amadeus_say(say_first)
+            for _ in range(int(discard_seconds / 0.25)):
+                stream.read(4000)
+
+        print("Говорите...")
         while True:
             data, _ = stream.read(4000)
             if recognizer.AcceptWaveform(bytes(data)):
+                text = json.loads(recognizer.Result()).get("text", "")
+                if text.strip():
+                    final_text = text
+                    started = True
+                if time.time() - last_speech_time > 2.0:
+                    break
+            else:
+                partial = json.loads(recognizer.PartialResult()).get("partial", "")
+                if partial.strip():
+                    last_speech_time = time.time()
+                    started = True
+
+            if timeout_seconds and not started and time.time() - last_speech_time > timeout_seconds:
                 break
 
-    result = json.loads(recognizer.Result())
-    return result.get("text", "")
+    if not final_text.strip():
+        final_text = json.loads(recognizer.PartialResult()).get("partial", "")
+    return final_text
+
+# ---------- Утилиты ----------
+
+def fuzzy_contains(text, word, cutoff=0.75):
+    words = text.split()
+    return any(difflib.SequenceMatcher(None, w, word).ratio() >= cutoff for w in words)
 
 # ---------- Будильники ----------
 
@@ -111,10 +212,10 @@ def parse_time(text):
     elif "в" in words:
         words = words[words.index("в") + 1:]
     words = [w for w in words if w not in ("часов", "минут", "минуты", "часа")]
-    for split in range(1, len(words)):
+    for split in range(len(words) - 1, 0, -1):
         h = words_to_number(words[:split])
         mnt = words_to_number(words[split:])
-        if h is not None and mnt is not None:
+        if h is not None and mnt is not None and h <= 23 and mnt <= 59:
             return h, mnt
     return None
 
@@ -124,9 +225,6 @@ def set_alarm(text):
         amadeus_say("Не понял время. Скажите, например: поставь будильник на 7 30")
         return
     h, mnt = parsed
-    if not (0 <= h <= 23 and 0 <= mnt <= 59):
-        amadeus_say("Такого времени не бывает. Часы от 0 до 23, минуты от 0 до 59.")
-        return
     alarms = load_alarms()
     alarm = {"hour": h, "minute": mnt}
     if alarm in alarms:
@@ -136,20 +234,29 @@ def set_alarm(text):
     save_alarms(alarms)
     amadeus_say(f"Будильник поставлен на {h} часов {mnt} минут.")
 
-def remove_alarm(text):
+def remove_alarm(text, silent=False):
     parsed = parse_time(text)
-    if not parsed:
-        amadeus_say("Не понял, какой будильник удалить.")
-        return
-    h, mnt = parsed
     alarms = load_alarms()
-    alarm = {"hour": h, "minute": mnt}
-    if alarm in alarms:
-        alarms.remove(alarm)
+    if parsed:
+        h, mnt = parsed
+        alarm = {"hour": h, "minute": mnt}
+        if alarm in alarms:
+            alarms.remove(alarm)
+            save_alarms(alarms)
+            if not silent:
+                amadeus_say(f"Будильник на {h} {mnt} удалён.")
+            return
+        if not silent:
+            amadeus_say(f"Будильника на {h} {mnt} нет.")
+        return
+    fired = getattr(remove_alarm, "last_fired", None)
+    if fired and fired in alarms:
+        alarms.remove(fired)
         save_alarms(alarms)
-        amadeus_say(f"Будильник на {h} {mnt} удалён.")
-    else:
-        amadeus_say(f"Будильника на {h} {mnt} нет.")
+        if not silent:
+            amadeus_say(f"Будильник на {fired['hour']} {fired['minute']} удалён.")
+    elif not silent:
+        amadeus_say("Не понял, какой будильник удалить.")
 
 def list_alarms():
     alarms = load_alarms()
@@ -166,7 +273,15 @@ def alarm_watcher():
         alarms = load_alarms()
         for a in alarms:
             if a["hour"] == now.hour and a["minute"] == now.minute and now.second < 20:
+                remove_alarm.last_fired = a
                 amadeus_say(f"Проснись! Время {a['hour']} часов {a['minute']} минут. Это Амадэус, вставай!")
+                time.sleep(1)
+                answer = amadeus_listen(say_first="Это разовый будильник. Удалить его?")
+                print(f"Ответ: {answer}")
+                if any(w in answer for w in ("да", "удали", "конечно", "давай", "ага", "угу")):
+                    remove_alarm("")
+                else:
+                    amadeus_say("Оставляю будильник.")
         time.sleep(10)
 
 # ---------- Погода ----------
@@ -204,34 +319,60 @@ def get_weather():
 # ---------- Команды ----------
 
 def handle_command(text):
-    if "время" in text or "который час" in text or "сколько времени" in text:
+    """Вернёт: True (команда выполнена), False (выход), 'ai' (ответил ИИ)."""
+    if fuzzy_contains(text, "время") or "который час" in text or "сколько времени" in text:
         now = datetime.now()
         amadeus_say(f"Сейчас {now.hour} часов {now.minute} минут")
-    elif "погода" in text or "погоду" in text:
+    elif fuzzy_contains(text, "погода") or "погоду" in text:
         amadeus_say("Секунду, ищу в интернете.")
         weather_text = get_weather()
         if weather_text:
             amadeus_say(weather_text)
         else:
             amadeus_say("Не удалось узнать погоду. Проверьте интернет.")
-    elif "будильник" in text and ("удали" in text or "отмени" in text):
+    elif fuzzy_contains(text, "будильник") and any(w in text for w in ("удали", "отмени", "выключи", "убери")):
         remove_alarm(text)
-    elif "будильник" in text and ("какие" in text or "какой" in text or "список" in text or "покажи" in text):
+    elif fuzzy_contains(text, "будильник") and any(w in text for w in ("какие", "какой", "список", "покажи", "остались")):
         list_alarms()
-    elif "будильник" in text:
+    elif fuzzy_contains(text, "будильник"):
         set_alarm(text)
-    elif "стоп" in text or "выход" in text or "пока" in text:
-        amadeus_say("Выключаюсь. До встречи!")
+    elif any(text.startswith(w) for w in ("поищи", "найди", "загугли", "погугли")):
+        query = text
+        for w in ("поищи", "найди", "загугли", "погугли"):
+            if text.startswith(w):
+                query = text[len(w):].strip()
+                break
+        amadeus_say("Секунду, ищу в интернете.")
+        answer = ai_ask_with_search(query)
+        amadeus_say(answer)
+        return "ai"
+    elif any(w in text for w in ("стоп", "выход", "пока", "выключись", "хватит")):
+        alarms = load_alarms()
+        if alarms:
+            answer = amadeus_listen(say_first=f"Выключаюсь. У вас осталось {len(alarms)} будильников. Очистить их все?")
+            print(f"Ответ: {answer}")
+            if any(w in answer for w in ("да", "очисти", "конечно", "давай", "ага", "угу", "удали")):
+                save_alarms([])
+                amadeus_say("Все будильники удалены. До встречи!")
+            else:
+                amadeus_say("Оставляю будильники. До встречи!")
+        else:
+            amadeus_say("Выключаюсь. До встречи!")
         return False
     else:
-        amadeus_say(f"Вы сказали: {text}")
+        amadeus_say("Секунду, думаю.")
+        answer = ai_ask(text)
+        if answer:
+            amadeus_say(answer)
+            return "ai"
+        else:
+            amadeus_say("Не смог ответить. Проверьте, запущена ли модель.")
     return True
 
 # ---------- Активация по слову ----------
 
 def wait_for_wake_word():
-    model = Model(MODEL_PATH)
-    recognizer = KaldiRecognizer(model, 16000)
+    recognizer = KaldiRecognizer(vosk_model, 16000)
 
     print("Жду команду... (скажите «Амадэус»)")
     with sd.RawInputStream(samplerate=16000, blocksize=8000,
@@ -253,13 +394,24 @@ amadeus_say("Привет! Я Амадэус. Позовите меня по и�
 
 while True:
     wait_for_wake_word()
-    amadeus_say("Слушаю вас.")
-    text = amadeus_listen()
+    text = amadeus_listen(say_first="Слушаю вас.")
     print(f"Вы сказали: {text}")
 
     if not text.strip():
         amadeus_say("Я вас не расслышал.")
         continue
 
-    if not handle_command(text):
+    result = handle_command(text)
+    if result is False:
         break
+
+    # Если ответила ИИ — продолжаем диалог без повторного вызова имени
+    while result == "ai":
+        follow = amadeus_listen(timeout_seconds=30)
+        if not follow.strip():
+            amadeus_say("Если что — позовите меня по имени.")
+            break
+        print(f"Вы сказали: {follow}")
+        result = handle_command(follow)
+        if result is False:
+            break

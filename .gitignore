@@ -1,5 +1,8 @@
 venv/
-.venv/
-env/
+vosk-model-small-ru-0.22/
 *.onnx
-vosk-model-*/
+alarms.json
+speech.wav
+speech.mp3
+test.mp3
+__pycache__/
