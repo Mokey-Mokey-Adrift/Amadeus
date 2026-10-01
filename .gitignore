@@ -1,8 +1,71 @@
-venv/
-vosk-model-small-ru-0.22/
-*.onnx
-alarms.json
-speech.wav
-speech.mp3
-test.mp3
+# === Python ===
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+.eggs/
+
+# === Виртуальное окружение ===
+venv/
+env/
+ENV/
+.venv
+
+# === IDE ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# === Модели Vosk (весят много) ===
+models/vosk-model-ru-0.22/
+models/vosk-model-ru-0.42/
+models/vosk-model-small-ru-0.22/
+
+# === Голоса Piper (бинарные файлы) ===
+voices/*.onnx
+voices/*.onnx.json
+
+# === Временные файлы ===
+speech.wav
+*.tmp
+*.temp
+
+# === Системные файлы Windows ===
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# === Логи и данные ===
+*.log
+alarms.json
+
+# === Секреты и конфиги с ключами ===
+config.py
+.env
+*.key
+*.secret
+
+# === Кэш пакетного менеджера ===
+.pip/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# === Тестирование ===
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# === Jupyter ===
+.ipynb_checkpoints/
+
+# === Сборка ===
+*.spec
+MANIFEST
