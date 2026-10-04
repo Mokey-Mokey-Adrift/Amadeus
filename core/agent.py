@@ -1,3 +1,4 @@
+# core/agent.py
 from openai import OpenAI
 import json
 import config
@@ -8,7 +9,6 @@ client = OpenAI(
     timeout=15.0
 )
 
-conversation_history = []
 MAX_HISTORY = 15
 
 BASE_TOOLS = [
@@ -55,7 +55,7 @@ BASE_TOOLS = [
             }
         }
     },
-        {
+    {
         "type": "function",
         "function": {
             "name": "get_current_time",
@@ -80,20 +80,23 @@ SYSTEM_PROMPT = """Ты — Амадэус, голосовой ассистен�
 
 Если не знаешь ответа — честно скажи об этом."""
 
-def ask_ai(text: str):
-    """Получаем запрос от пользователя и решаем, вызывать функцию или нет"""
-    global conversation_history
+def ask_ai(text: str, chat_history: list):
+    """Получаем запрос от пользователя и решаем, вызывать функцию или нет.
+    chat_history — список сообщений только текущего чата."""
     
     if not config.API_KEY or config.API_KEY == "ТВОЙ_КЛЮЧ_ОТ_PROXYAPI":
         return {"type": "text", "content": "Ошибка: не указан API ключ в config.py"}
     
     try:
-        conversation_history.append({"role": "user", "content": text})
+        # Формируем сообщения: системный промпт + история текущего чата + новый запрос
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         
-        if len(conversation_history) > MAX_HISTORY:
-            conversation_history = conversation_history[-MAX_HISTORY:]
+        # Добавляем историю текущего чата (ограничиваем MAX_HISTORY)
+        for msg in chat_history[-MAX_HISTORY:]:
+            messages.append({"role": msg["role"], "content": msg["content"]})
         
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + conversation_history
+        # Добавляем текущий запрос
+        messages.append({"role": "user", "content": text})
         
         response = client.chat.completions.create(
             model=config.AI_MODEL,
@@ -108,12 +111,6 @@ def ask_ai(text: str):
             tool_call = message.tool_calls[0]
             print(f"[INFO] ИИ вызывает функцию: {tool_call.function.name}")
             
-            conversation_history.append({
-                "role": "assistant", 
-                "content": None,
-                "tool_calls": [tool_call]
-            })
-            
             return {
                 "type": "function",
                 "name": tool_call.function.name,
@@ -122,7 +119,6 @@ def ask_ai(text: str):
             }
         
         response_text = message.content.strip()
-        conversation_history.append({"role": "assistant", "content": response_text})
         
         return {"type": "text", "content": response_text}
         
@@ -130,17 +126,23 @@ def ask_ai(text: str):
         print(f"[ERROR] Ошибка API: {e}")
         return {"type": "text", "content": "Извини, проблемы со связью с моим мозгом."}
 
-def finalize_tool_response(tool_call_id: str, tool_result_content: str):
-    """ИИ получает результат функции и формулирует красивый ответ"""
-    global conversation_history
+def finalize_tool_response(tool_call_id: str, tool_result_content: str, chat_history: list):
+    """ИИ получает результат функции и формулирует красивый ответ.
+    chat_history — история текущего чата."""
+    
     try:
-        conversation_history.append({
+        # Формируем сообщения с результатом функции
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        
+        for msg in chat_history[-MAX_HISTORY:]:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+        
+        # Добавляем результат функции
+        messages.append({
             "role": "tool",
             "tool_call_id": tool_call_id,
             "content": tool_result_content
         })
-        
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + conversation_history
         
         response = client.chat.completions.create(
             model=config.AI_MODEL,
@@ -148,14 +150,9 @@ def finalize_tool_response(tool_call_id: str, tool_result_content: str):
         )
         
         final_text = response.choices[0].message.content.strip()
-        conversation_history.append({"role": "assistant", "content": final_text})
         
         return final_text
         
     except Exception as e:
         print(f"[ERROR] Ошибка при финализации ответа: {e}")
         return tool_result_content
-
-def clear_history():
-    global conversation_history
-    conversation_history = []

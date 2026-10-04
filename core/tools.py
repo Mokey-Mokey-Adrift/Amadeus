@@ -4,6 +4,8 @@ import time
 from datetime import datetime
 import requests
 import config
+import json
+import os
 
 def get_city_coordinates(city_name: str):
     """Автоматически находит координаты любого города через Open-Meteo Geocoding API"""
@@ -88,30 +90,43 @@ def set_alarm(hour: int, minute: int, say_callback):
     save_alarms(alarms)
     say_callback(f"Будильник поставлен на {hour} часов {minute} минут.")
 
-def web_search(query: str, max_results=3):
-    """Ищет информацию в интернете через DuckDuckGo"""
-    try:
-        from ddgs import DDGS  # <-- Было: from duckduckgo_search import DDGS
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, region='ru-ru', max_results=max_results))
-        
-        if not results:
-            return None
-        
-        snippets = []
-        for r in results[:max_results]:
-            title = r.get('title', '')
-            body = r.get('body', '')
-            snippets.append(f"{title}: {body}")
-        
-        return "\n\n".join(snippets)
-    except ImportError:
-        print("[ERROR] ddgs не установлен. pip install ddgs")
-        return None
-    except Exception as e:
-        print(f"[ERROR] Ошибка поиска: {e}")
-        return None
+def _log_search(query: str, links: list, ai_summary: str):
+    """Сохраняет логи поиска в отдельный файл"""
+    if not os.path.exists("data"):
+        os.makedirs("data")
+    
+    log_entry = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "query": query,
+        "links": links,
+        "ai_summary": ai_summary
+    }
+    
+    # Используем формат JSONL (JSON Lines) для удобного дописывания
+    with open("data/search_log.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
 
+# Внутри твоей функции web_search (после получения результатов):
+def web_search(query: str, max_results=3):
+    # ... твой код поиска (SearXNG / Brave) ...
+    # Предположим, ты получил список results
+    
+    snippets = []
+    links = []
+    for r in results[:max_results]:
+        title = r.get('title', '')
+        body = r.get('body', '')
+        url = r.get('href', r.get('url', ''))
+        snippets.append(f"{title}: {body}")
+        links.append(url)
+    
+    final_text = "\n\n".join(snippets)
+    
+    # Вызываем логирование (ai_summary пока пустой, его заполнит agent.py позже, 
+    # но можно передать и сырой результат, если хочешь)
+    _log_search(query, links, "Данные переданы в LLM") 
+    
+    return final_text
 def alarm_watcher(say_callback):
     while True:
         now = datetime.now()

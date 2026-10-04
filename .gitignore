@@ -45,6 +45,7 @@ desktop.ini
 # === Логи и данные ===
 *.log
 alarms.json
+data/*.json
 
 # === Секреты и конфиги с ключами ===
 config.py
