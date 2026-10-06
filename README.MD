@@ -29,7 +29,7 @@
 ```bash
 git clone <url-вашего-репозитория>
 cd Amadeus
-
+```
 # Создайте виртуальное окружение
 python -m venv venv
 
