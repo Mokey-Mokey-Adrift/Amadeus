@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 import time
 from datetime import datetime
 import requests
@@ -25,12 +26,13 @@ def get_city_coordinates(city_name: str):
         print(f"[ERROR] Ошибка геокодирования: {e}")
         return None, None, None
 
-def get_weather(city: str = None):
+def get_weather(city: str = None, language: str = "ru"):
     """Получает погоду для указанного города. Автоматически находит координаты."""
     if city:
         # Автоматически ищем координаты города через геокодер
         try:
-            geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1&language=ru&format=json"
+            geo_locale = "en" if language == "en" else "ru"
+            geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1&language={geo_locale}&format=json"
             response = requests.get(geo_url, timeout=5)
             data = response.json()
             
@@ -39,10 +41,18 @@ def get_weather(city: str = None):
                 lon = data["results"][0]["longitude"]
                 city_name = data["results"][0]["name"]
             else:
-                return f"Я не смог найти город '{city}'. Уточни название."
+                return (
+                    f"I couldn't find the city '{city}'. Please check its name."
+                    if language == "en"
+                    else f"Я не смог найти город '{city}'. Уточни название."
+                )
         except Exception as e:
             print(f"[ERROR] Ошибка поиска города: {e}")
-            return f"Не удалось найти город '{city}'."
+            return (
+                f"Could not look up the city '{city}'."
+                if language == "en"
+                else f"Не удалось найти город '{city}'."
+            )
     else:
         # Если город не указан, используем дефолтный из config
         lat, lon = config.CITY_LAT, config.CITY_LON
@@ -57,27 +67,52 @@ def get_weather(city: str = None):
         temp = round(current["temperature_2m"])
         feels = round(current["apparent_temperature"])
         wind = round(current["wind_speed_10m"])
+        if language == "en":
+            return f"In {city_name}, it is {temp}°C, feels like {feels}°C, with wind at {wind} km/h."
         return f"В городе {city_name} сейчас {temp}°C, ощущается как {feels}°C. Ветер {wind} м/с."
     except Exception as e:
         print(f"[ERROR] Ошибка запроса погоды: {e}")
-        return "Не удалось получить данные о погоде."
+        return (
+            "Could not retrieve weather data."
+            if language == "en"
+            else "Не удалось получить данные о погоде."
+        )
 
-def get_current_time():
+def get_current_time(language: str = "ru"):
     """Возвращает текущее время и дату"""
     now = datetime.now()
     time_str = now.strftime("%H:%M")
-    date_str = now.strftime("%d %B %Y")  # например: "01 октября 2023"
-    day_of_week = now.strftime("%A")  # например: "воскресенье"
+    if language == "en":
+        return f"It is {time_str} on {now.strftime('%A, %B %d, %Y')}."
+    date_str = now.strftime("%d %B %Y")
+    day_of_week = now.strftime("%A")
     return f"Сейчас {time_str}, {date_str}, {day_of_week}."
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ALARMS_FILE = PROJECT_ROOT / "data" / "alarms.json"
+
+
+def _migrate_legacy_alarms():
+    legacy_file = Path(config.ALARMS_FILE)
+    if not legacy_file.is_absolute():
+        legacy_file = PROJECT_ROOT / legacy_file
+    if legacy_file == ALARMS_FILE or not legacy_file.exists() or ALARMS_FILE.exists():
+        return
+
+    ALARMS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    legacy_file.replace(ALARMS_FILE)
+
+
 def load_alarms():
-    if os.path.exists(config.ALARMS_FILE):
-        with open(config.ALARMS_FILE, "r", encoding="utf-8") as f:
+    _migrate_legacy_alarms()
+    if ALARMS_FILE.exists():
+        with open(ALARMS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return []
 
 def save_alarms(alarms):
-    with open(config.ALARMS_FILE, "w", encoding="utf-8") as f:
+    ALARMS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(ALARMS_FILE, "w", encoding="utf-8") as f:
         json.dump(alarms, f, ensure_ascii=False, indent=2)
 
 def set_alarm(hour: int, minute: int, say_callback):

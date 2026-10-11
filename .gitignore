@@ -36,6 +36,7 @@ voices/*.onnx.json
 speech.wav
 *.tmp
 *.temp
+/sprites/
 
 # === Системные файлы Windows ===
 Thumbs.db
@@ -70,3 +71,6 @@ htmlcov/
 # === Сборка ===
 *.spec
 MANIFEST
+node_modules/
+dist/
+release/
